@@ -1,0 +1,8 @@
+numpy
+pandas
+opencv-python-headless
+matplotlib
+seaborn
+joblib
+scikit-learn==1.4.2
+scikit-image

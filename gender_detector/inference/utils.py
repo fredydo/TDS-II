@@ -36,9 +36,8 @@ def predict(model, scaler, image_path):
 
     features = scaler.transform([features])
     pred = model.predict(features)[0]
-    score = model.decision_function(features)[0]
+    prob  = model.predict_proba(features)[0]
     label = "Male" if pred == 0 else "Female"
 
-    print(f"Prediction: {label} (score: {score:.4f})")
-    return label, score
-
+    print(f"Probabilities → Male: {prob[0]:.2f}, Female: {prob[1]:.2f}")
+    return label, prob

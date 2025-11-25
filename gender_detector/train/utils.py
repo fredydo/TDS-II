@@ -1,18 +1,23 @@
 import os
 import cv2
 import random
+import warnings
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from joblib import dump
-from sklearn.svm import SVC
 from collections import Counter
 import matplotlib.pyplot as plt
 from skimage.feature import hog
-from matplotlib.patches import Patch
+from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.model_selection import GridSearchCV, train_test_split, StratifiedKFold
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, roc_curve, auc, recall_score, precision_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, recall_score, precision_score
+
+warnings.filterwarnings("ignore", category=UserWarning)
+os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 
 IMG_SIZE = 64
 orientations = 9
@@ -27,6 +32,8 @@ def extract_gender(filename):
         return None
 
 def plot_confusion_matrix(y_true, y_pred, filename='confusion_matrix.png'):
+    os.makedirs("results", exist_ok=True)
+
     cf_matrix = confusion_matrix(y_true, y_pred, normalize=("true"))
     cf_matrix_v = confusion_matrix(y_true, y_pred)
 
@@ -49,58 +56,9 @@ def plot_confusion_matrix(y_true, y_pred, filename='confusion_matrix.png'):
     plt.title("Confusion Matrix")
     plt.tight_layout()
 
-    plt.savefig(filename, dpi=300)
+    plt.savefig('results/'+filename, dpi=300)
 
     return cf_matrix
-
-def plot_ROC_curve(all_y_true, all_y_score, filename='roc_curve.png'):
-    """Generate and save ROC curve"""
-
-    fpr, tpr, _ = roc_curve(all_y_true, all_y_score)
-    roc_auc = auc(fpr, tpr)
-    plt.figure(figsize=(5,5))
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC (AUC = {roc_auc:.2f})')
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('1 - Specificity')
-    plt.ylabel('Sensitivity')
-    plt.title('ROC Curve')
-    plt.legend(loc="lower right")
-    plt.savefig(filename)
-    plt.close()
-
-def plot_probability_density(y_true, y_proba, filename='probability_density.png'):
-    """Plot density distribution of predicted probabilities for each class"""
-
-    df = pd.DataFrame({
-        'Probability': y_proba,
-        'Group': ['Male' if label == 0 else 'Female' for label in y_true]
-    })
-
-    blues = sns.color_palette("Blues", n_colors=6)
-    colors = [blues[1], blues[4]]
-
-    fig, axes = plt.subplots(nrows=2, ncols=1, gridspec_kw={'height_ratios': [1, 4]}, figsize=(6, 6), sharex=True)
-
-    sns.boxplot(x="Probability", y="Group", hue="Group", data=df, dodge=False, palette=colors, ax=axes[0], legend=False)
-    axes[0].set_xlabel("")
-    axes[0].set_ylabel("")
-    axes[0].set_yticks([])
-    axes[0].set_title("Score Distribution")
-
-    sns.histplot(data=df, x="Probability", hue="Group", kde=True, palette=colors, stat="density", bins=10, ax=axes[1], legend=True)
-
-    axes[1].set_xlabel("Score")
-    legend_handles = [
-        Patch(color=colors[0], label='Male'),
-        Patch(color=colors[1], label='Female')
-    ]
-    axes[1].legend(handles=legend_handles)
-
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    plt.close()
 
 def plot_samples(dataset_dir, num_rows=5, num_cols=6):
 
@@ -200,18 +158,49 @@ def specificity_score(y_true, y_pred):
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     return tn / (tn + fp)
 
-def retrain_final_model(X_full, y_full, results, model_path="svm_gender_model.joblib", scaler_path="scaler.joblib", random_state=42):
+def retrain_final_model(X_full, y_full, results, model_choice="nb"):
     """Retrain the final SVM model on all data using the best hyperparameters."""
 
-    results['C'] = results['best_params'].apply(lambda x: x['C'])
-    results['kernel'] = results['best_params'].apply(lambda x: x['kernel'])
+    os.makedirs("results", exist_ok=True)
 
-    # Get mode (most common) C and kernel
-    best_C = Counter(results['C']).most_common(1)[0][0]
-    best_kernel = Counter(results['kernel']).most_common(1)[0][0]
-    best_params = {'C': best_C, 'kernel': best_kernel}
+    possible_models = {
+        "logreg": {
+            "name": "LogisticRegression",
+            "model": LogisticRegression,
+            "param_grid": ['C', 'penalty', 'max_iter']
+            },
 
-    print("Retraining final model on all data with best params:", best_params)
+        "nb": {
+            "name": "GaussianNB",
+            "model": GaussianNB,
+            "param_grid": ['var_smoothing']
+        },
+
+        "qda": {
+            "name": "QuadraticDiscriminantAnalysis",
+            "model": QuadraticDiscriminantAnalysis,
+            "param_grid": ['reg_param']
+        }
+    }
+
+    config = possible_models[model_choice]
+    hp_keys = config["param_grid"]
+    model_path = f"results/{model_choice}_gender_model.joblib"
+    scaler_path = f"results/{model_choice}_scaler.joblib"
+
+    best_params_all = list(results["best_params"])
+
+    # Compute most common value per hyperparameter
+    final_best_params = {}
+
+    for hp in hp_keys:
+        values = [bp[hp] for bp in best_params_all if hp in bp]
+        most_common_value = Counter(values).most_common(1)[0][0]
+        final_best_params[hp] = most_common_value
+
+    print("\n===== Retraining Final Model =====")
+    print(f"Model: {config['name']}")
+    print(f"Best Params (mode across folds): {final_best_params}")
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_full)
@@ -219,7 +208,8 @@ def retrain_final_model(X_full, y_full, results, model_path="svm_gender_model.jo
     dump(scaler, scaler_path)
     print(f"Scaler saved to {scaler_path}")
 
-    final_model = SVC(C=best_C, kernel=best_kernel, probability=True, random_state=random_state)
+    model = config["model"]
+    final_model = model(**final_best_params)
     final_model.fit(X_scaled, y_full)
 
     dump(final_model, model_path)
@@ -227,20 +217,50 @@ def retrain_final_model(X_full, y_full, results, model_path="svm_gender_model.jo
 
     return final_model, scaler
 
-def nested_cv(X, y, n_splits=5, random_state=42):
+def nested_cv(X, y, n_splits=5, model_choice="GaussianNB", random_state=42):
+
+    possible_models = {
+        "logreg": {
+            "name": "LogisticRegression",
+            "model": LogisticRegression(),
+            "param_grid": {
+                'C': [0.0005, 0.001, 0.005],
+                'penalty': ['l2', 'l2'],
+                'max_iter': [500, 600]
+            },
+        },
+
+        "nb": {
+            "name": "GaussianNB",
+            "model": GaussianNB(),
+            "param_grid": {
+                'var_smoothing': [1e-9, 1e-8, 1e-7]
+            },
+        },
+
+        "qda": {
+            "name": "QuadraticDiscriminantAnalysis",
+            "model": QuadraticDiscriminantAnalysis(),
+            "param_grid": {
+                'reg_param': [0.01, 0.1, 0.5, 1]
+            },
+        }
+    }
+
     outer_cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
-    all_y_true, all_y_pred, all_y_score = [], [], []
+    all_y_true, all_y_pred = [], []
 
-    param_grid = {
-        'C': [0.01, 1, 10, 100],
-        'kernel': ['linear', 'rbf']
-    }
+    if model_choice not in possible_models:
+        raise ValueError(f"Invalid model_choice. Use one of: {list(possible_models.keys())}")
+
+    model_info = possible_models[model_choice]
+
+    print(f"\n>>>> Running Nested CV using: {model_info['name']} <<<<")
 
     results = []
     all_y_true = []
     all_y_pred = []
-    all_y_score = []
 
     for i, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
         print(f"\nOuter Fold {i + 1}:")
@@ -252,12 +272,11 @@ def nested_cv(X, y, n_splits=5, random_state=42):
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
-        model = SVC(random_state=random_state)
         inner_cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=random_state)
 
         grid_search = GridSearchCV(
-            estimator=model,
-            param_grid=param_grid,
+            estimator=model_info["model"],
+            param_grid=model_info["param_grid"],
             scoring='accuracy',
             cv=inner_cv,
             n_jobs=-1,
@@ -266,16 +285,13 @@ def nested_cv(X, y, n_splits=5, random_state=42):
 
         grid_search.fit(X_train_scaled, y_train)
         
-        best_params = grid_search.best_params_
-        best_model = SVC(C=best_params['C'], kernel=best_params['kernel'], random_state=random_state)
+        best_model = grid_search.best_estimator_
         best_model.fit(X_train_scaled, y_train)
 
         y_pred = best_model.predict(X_test_scaled)
-        y_score = best_model.decision_function(X_test_scaled)
 
         all_y_true.extend(y_test)
         all_y_pred.extend(y_pred)
-        all_y_score.extend(y_score)
 
         acc = accuracy_score(y_test, y_pred)
         recall = recall_score(y_test, y_pred)
@@ -299,12 +315,9 @@ def nested_cv(X, y, n_splits=5, random_state=42):
             'conf_matrix': cm.tolist(),
         })
 
-    return pd.DataFrame(results), all_y_true, all_y_pred, all_y_score
+    return pd.DataFrame(results), all_y_true, all_y_pred
 
-def evaluate_model(results, y_true, y_pred, y_score,
-                            cm_file='confusion_matrix.png',
-                            roc_file='roc_curve.png',
-                            density_file='probability_density.png'):
+def evaluate_model(results, y_true, y_pred, cm_file='confusion_matrix.png'):
     """Evaluate a binary classifier and show/save confusion matrix, ROC curve, and predicted probability density."""
 
     def show(name, values):
@@ -321,25 +334,21 @@ def evaluate_model(results, y_true, y_pred, y_score,
     print()
 
     plot_confusion_matrix(y_true, y_pred, filename=cm_file)
-    plot_ROC_curve(y_true, y_score, filename=roc_file)
-    plot_probability_density(y_true, y_score, filename=density_file)
 
-def run_multiple_nested_cv(X, y, n_runs=5, n_splits=5):
+def run_multiple_nested_cv(X, y, n_runs=5, n_splits=5, model_choice="nb"):
     all_results = []
     all_y_true_all_runs = []
     all_y_pred_all_runs = []
-    all_y_score_all_runs = []
 
     for run in range(n_runs):
         print(f"\n====== Run {run + 1} ======")
-        results_df, y_true, y_pred, y_score = nested_cv(X, y, n_splits=n_splits, random_state=run)
+        results_df, y_true, y_pred = nested_cv(X, y, n_splits=n_splits, model_choice=model_choice, random_state=run)
 
         results_df['run'] = run + 1
         all_results.append(results_df)
 
         all_y_true_all_runs.extend(y_true)
         all_y_pred_all_runs.extend(y_pred)
-        all_y_score_all_runs.extend(y_score)
 
     all_results_df = pd.concat(all_results, ignore_index=True)
-    return all_results_df, all_y_true_all_runs, all_y_pred_all_runs, all_y_score_all_runs
+    return all_results_df, all_y_true_all_runs, all_y_pred_all_runs
